@@ -2,6 +2,11 @@
 //!
 //! WebSocket server that manages Azalea Minecraft bots for RL training.
 //! Python training code communicates via JSON messages over WebSocket.
+//!
+//! Architecture: Azalea requires `spawn_local` (Bevy ECS), so the main
+//! tokio runtime uses `current_thread` flavor with a `LocalSet`. The WS
+//! server runs on a separate OS thread with its own multi-thread runtime.
+//! Communication between the two uses `tokio::sync::mpsc` channels.
 
 mod observation;
 mod skills;
@@ -14,8 +19,7 @@ use azalea::prelude::*;
 use futures_util::{SinkExt, StreamExt};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
-use tokio::net::{TcpListener, TcpStream};
-use tokio_tungstenite::tungstenite::Message;
+use tokio::sync::{mpsc, oneshot};
 use tracing::{error, info, warn};
 
 use observation::collect_observation;
@@ -32,7 +36,7 @@ type Bots = Arc<RwLock<HashMap<u32, BotEnv>>>;
 
 // ── WebSocket Protocol ──
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 struct WsRequest {
     #[serde(rename = "type")]
     msg_type: String,
@@ -62,14 +66,6 @@ struct StepResult {
 }
 
 #[derive(Serialize)]
-struct SkillsResult {
-    #[serde(rename = "type")]
-    msg_type: String,
-    total_actions: usize,
-    core_skills: usize,
-}
-
-#[derive(Serialize)]
 struct ErrorResult {
     #[serde(rename = "type")]
     msg_type: String,
@@ -80,14 +76,35 @@ struct ErrorResult {
     skill_result: SkillResult,
 }
 
-// ── Server ──
+// ── Command types sent from WS thread to Azalea thread ──
+
+enum BotCommand {
+    Reset {
+        env_id: u32,
+        stage: u8,
+        mc_host: String,
+        mc_port: u16,
+        reply: oneshot::Sender<String>,
+    },
+    Step {
+        env_id: u32,
+        action: u32,
+        reply: oneshot::Sender<String>,
+    },
+    GetState {
+        env_id: u32,
+        reply: oneshot::Sender<String>,
+    },
+    GetSkills {
+        reply: oneshot::Sender<String>,
+    },
+}
 
 const DEFAULT_PORT: u16 = 8765;
 const MC_HOST: &str = "localhost";
 const MC_PORT: u16 = 25565;
 
-#[tokio::main]
-async fn main() -> eyre::Result<()> {
+fn main() {
     tracing_subscriber::fmt::init();
 
     let port = std::env::var("PORT")
@@ -101,27 +118,107 @@ async fn main() -> eyre::Result<()> {
         .and_then(|p| p.parse().ok())
         .unwrap_or(MC_PORT);
 
+    info!("MineBrain bot server starting");
+    info!("  WS port:   {port}");
+    info!("  MC server:  {mc_host}:{mc_port}");
+
+    // Channel: WS thread sends commands, Azalea thread processes them
+    let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<BotCommand>();
+
+    // Start WebSocket server on a separate OS thread (multi-threaded runtime)
+    let ws_mc_host = mc_host.clone();
+    let ws_mc_port = mc_port;
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("Failed to build WS runtime");
+
+        rt.block_on(ws_server(port, cmd_tx, ws_mc_host, ws_mc_port));
+    });
+
+    // Run Azalea bot logic on main thread with LocalSet (required by Bevy ECS)
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("Failed to build Azalea runtime");
+
+    let local = tokio::task::LocalSet::new();
+    local.block_on(&rt, bot_command_loop(cmd_rx, mc_host, mc_port));
+}
+
+// ── Bot command processor (runs in LocalSet) ──
+
+async fn bot_command_loop(
+    mut cmd_rx: mpsc::UnboundedReceiver<BotCommand>,
+    mc_host: String,
+    mc_port: u16,
+) {
     let bots: Bots = Arc::new(RwLock::new(HashMap::new()));
 
-    let addr = SocketAddr::from(([0, 0, 0, 0], port));
-    let listener = TcpListener::bind(&addr).await?;
+    while let Some(cmd) = cmd_rx.recv().await {
+        match cmd {
+            BotCommand::Reset {
+                env_id,
+                stage,
+                mc_host: host,
+                mc_port: port,
+                reply,
+            } => {
+                let response = handle_reset(&bots, env_id, stage, &host, port).await;
+                let _ = reply.send(response);
+            }
+            BotCommand::Step {
+                env_id,
+                action,
+                reply,
+            } => {
+                let response = handle_step(&bots, env_id, action).await;
+                let _ = reply.send(response);
+            }
+            BotCommand::GetState { env_id, reply } => {
+                let response = handle_get_state(&bots, env_id).await;
+                let _ = reply.send(response);
+            }
+            BotCommand::GetSkills { reply } => {
+                let response = serde_json::json!({
+                    "type": "skills_result",
+                    "total_actions": CORE_SKILL_COUNT,
+                    "core_skills": CORE_SKILL_COUNT,
+                })
+                .to_string();
+                let _ = reply.send(response);
+            }
+        }
+    }
+}
 
-    info!("MineBrain bot server listening on ws://0.0.0.0:{port}");
-    info!("Connecting bots to MC server at {mc_host}:{mc_port}");
+// ── WebSocket server (runs on separate thread) ──
+
+async fn ws_server(
+    port: u16,
+    cmd_tx: mpsc::UnboundedSender<BotCommand>,
+    mc_host: String,
+    mc_port: u16,
+) {
+    let addr = SocketAddr::from(([0, 0, 0, 0], port));
+    let listener = tokio::net::TcpListener::bind(&addr)
+        .await
+        .expect("Failed to bind WS port");
+
+    info!("WebSocket server listening on ws://0.0.0.0:{port}");
 
     while let Ok((stream, peer)) = listener.accept().await {
         info!("Python client connected from {peer}");
-        let bots = bots.clone();
+        let cmd_tx = cmd_tx.clone();
         let mc_host = mc_host.clone();
-        tokio::spawn(handle_connection(stream, bots, mc_host, mc_port));
+        tokio::spawn(handle_ws_connection(stream, cmd_tx, mc_host, mc_port));
     }
-
-    Ok(())
 }
 
-async fn handle_connection(
-    stream: TcpStream,
-    bots: Bots,
+async fn handle_ws_connection(
+    stream: tokio::net::TcpStream,
+    cmd_tx: mpsc::UnboundedSender<BotCommand>,
     mc_host: String,
     mc_port: u16,
 ) {
@@ -136,9 +233,9 @@ async fn handle_connection(
     let (mut tx, mut rx) = ws.split();
 
     while let Some(msg) = rx.next().await {
-        let msg = match msg {
-            Ok(Message::Text(text)) => text,
-            Ok(Message::Close(_)) => break,
+        let text = match msg {
+            Ok(tokio_tungstenite::tungstenite::Message::Text(t)) => t,
+            Ok(tokio_tungstenite::tungstenite::Message::Close(_)) => break,
             Err(e) => {
                 warn!("WebSocket error: {e}");
                 break;
@@ -146,65 +243,81 @@ async fn handle_connection(
             _ => continue,
         };
 
-        let req: WsRequest = match serde_json::from_str(&msg) {
+        let req: WsRequest = match serde_json::from_str(&text) {
             Ok(r) => r,
             Err(e) => {
+                let err = serde_json::json!({"error": format!("Invalid JSON: {e}")}).to_string();
                 let _ = tx
-                    .send(Message::Text(
-                        serde_json::json!({"error": format!("Invalid JSON: {e}")}).to_string(),
-                    ))
+                    .send(tokio_tungstenite::tungstenite::Message::Text(err))
                     .await;
                 continue;
             }
         };
 
         let env_id = req.env_id.unwrap_or(0);
-        let response = match req.msg_type.as_str() {
-            "reset" => {
-                handle_reset(
-                    &bots,
-                    env_id,
-                    req.stage.unwrap_or(0),
-                    req.seed,
-                    &mc_host,
-                    mc_port,
-                )
-                .await
-            }
-            "step" => {
-                handle_step(&bots, env_id, req.action.unwrap_or(0)).await
-            }
-            "get_state" => handle_get_state(&bots, env_id).await,
-            "get_skills" => {
-                serde_json::to_string(&SkillsResult {
-                    msg_type: "skills_result".into(),
-                    total_actions: CORE_SKILL_COUNT,
-                    core_skills: CORE_SKILL_COUNT,
-                })
-                .unwrap()
-            }
+        let (reply_tx, reply_rx) = oneshot::channel();
+
+        let cmd = match req.msg_type.as_str() {
+            "reset" => BotCommand::Reset {
+                env_id,
+                stage: req.stage.unwrap_or(0),
+                mc_host: mc_host.clone(),
+                mc_port,
+                reply: reply_tx,
+            },
+            "step" => BotCommand::Step {
+                env_id,
+                action: req.action.unwrap_or(0),
+                reply: reply_tx,
+            },
+            "get_state" => BotCommand::GetState {
+                env_id,
+                reply: reply_tx,
+            },
+            "get_skills" => BotCommand::GetSkills { reply: reply_tx },
             other => {
-                serde_json::json!({"error": format!("Unknown type: {other}")}).to_string()
+                let err = serde_json::json!({"error": format!("Unknown type: {other}")}).to_string();
+                let _ = tx
+                    .send(tokio_tungstenite::tungstenite::Message::Text(err))
+                    .await;
+                continue;
             }
         };
 
-        if tx.send(Message::Text(response)).await.is_err() {
+        if cmd_tx.send(cmd).is_err() {
             break;
+        }
+
+        // Wait for reply from the Azalea thread
+        match reply_rx.await {
+            Ok(response) => {
+                if tx
+                    .send(tokio_tungstenite::tungstenite::Message::Text(response))
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
+            Err(_) => {
+                warn!("Bot command handler dropped");
+                break;
+            }
         }
     }
 
     info!("Python client disconnected");
 }
 
+// ── Bot handlers (run in LocalSet context) ──
+
 async fn handle_reset(
     bots: &Bots,
     env_id: u32,
     stage: u8,
-    _seed: Option<u64>,
     mc_host: &str,
     mc_port: u16,
 ) -> String {
-    // Create bot if it doesn't exist, or reset existing one
     let needs_create = {
         let lock = bots.read();
         !lock.contains_key(&env_id)
@@ -213,14 +326,21 @@ async fn handle_reset(
     if needs_create {
         let username = format!("minebrain_{env_id}");
         let account = Account::offline(&username);
-        let addr = format!("{mc_host}:{}", mc_port + env_id as u16);
+        let addr = format!("{mc_host}:{mc_port}");
+
+        info!("Creating bot {username} connecting to {addr}");
 
         match Client::join(account, addr.as_str()).await {
             Ok((client, _rx)) => {
+                info!("Bot {username} connected successfully");
+                // Wait for spawn
+                client.wait_ticks(20).await;
+
                 let mut lock = bots.write();
                 lock.insert(env_id, BotEnv { client, stage });
             }
             Err(e) => {
+                error!("Failed to connect bot: {e:?}");
                 return serde_json::to_string(&ErrorResult {
                     msg_type: "reset_result".into(),
                     error: format!("Failed to connect bot: {e:?}"),
@@ -234,11 +354,11 @@ async fn handle_reset(
         }
     }
 
-    // Reset via chat commands if bot exists
+    // Reset via chat commands
     let bot = {
         let lock = bots.read();
         lock.get(&env_id).map(|env| env.client.clone())
-    }; // lock dropped here before any await
+    };
 
     if let Some(bot) = bot {
         bot.chat("/tp @s 0 64 0");
@@ -251,7 +371,7 @@ async fn handle_reset(
         bot.chat("/effect give @s minecraft:instant_health 1 10");
         bot.chat("/effect give @s minecraft:saturation 1 10");
 
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        bot.wait_ticks(10).await;
 
         let raw_state = collect_observation(&bot, stage);
         let action_mask = get_action_mask(&bot, stage);
@@ -265,7 +385,6 @@ async fn handle_reset(
         .unwrap();
     }
 
-    // Fallback: return empty state
     serde_json::to_string(&ResetResult {
         msg_type: "reset_result".into(),
         env_id,
