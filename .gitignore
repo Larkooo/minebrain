@@ -23,3 +23,5 @@ server/banned-*.json
 server/whitelist.json
 server/usercache.json
 server/.console_history
+server/*.yml
+server/*.json
