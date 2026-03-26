@@ -350,6 +350,7 @@ def train(cfg: dict):
 
 def train_stage(model, optimizer, stage: int, cfg: dict):
     """Train a single curriculum stage. Returns (model, promoted)."""
+    from src.dashboard import FullscreenDashboard
 
     vec_env = AsyncVecEnv(cfg["n_envs"], cfg["ws_url"], stage)
     obs, masks = vec_env.reset()
@@ -357,166 +358,176 @@ def train_stage(model, optimizer, stage: int, cfg: dict):
     save_dir = Path(cfg["save_dir"]) / f"stage_{stage}"
     save_dir.mkdir(exist_ok=True, parents=True)
 
-    dash = Dashboard(cfg)
-    dash.stage = stage
-    dash.print_header()
+    dash = FullscreenDashboard(n_envs=cfg["n_envs"], stage=stage)
+    dash.max_steps = cfg["steps_per_stage"]
+    dash.set_stage(stage)
+    dash.start()
 
     log_data = []
+    episode_results = []
     t_start = time.time()
     steps_per_rollout = cfg["rollout_steps"] * cfg["n_envs"]
     best_goal_rate = 0.0
+    episode_counter = 0
     rollout_num = 0
 
-    while rollout_num * steps_per_rollout < cfg["steps_per_stage"]:
-        # Anneal reward shaping
-        progress = min(rollout_num * steps_per_rollout / cfg["steps_per_stage"], 1.0)
-        shaping_w = get_shaping_weight(progress, stage)
-        vec_env.set_shaping_weight(shaping_w)
+    try:
+        while rollout_num * steps_per_rollout < cfg["steps_per_stage"]:
+            # Anneal reward shaping
+            progress = min(rollout_num * steps_per_rollout / cfg["steps_per_stage"], 1.0)
+            shaping_w = get_shaping_weight(progress, stage)
+            vec_env.set_shaping_weight(shaping_w)
 
-        # Collect rollout
-        dash.phase = "rollout"
-        buffer = RolloutBuffer(cfg["rollout_steps"], cfg["n_envs"])
+            # Collect rollout
+            buffer = RolloutBuffer(cfg["rollout_steps"], cfg["n_envs"])
 
-        for step in range(cfg["rollout_steps"]):
-            if rollout_num == 0 and step == 0:
-                dash.phase = "compiling MLX..."
-                dash.render(force=True)
+            for step in range(cfg["rollout_steps"]):
+                phase = "compiling MLX..." if rollout_num == 0 and step == 0 else "rollout"
 
-            obs_mx = mx.array(obs)
-            masks_mx = mx.array(masks)
+                obs_mx = mx.array(obs)
+                masks_mx = mx.array(masks)
 
-            logits, values = model(obs_mx, masks_mx)
-            mx.eval(logits, values)
+                logits, values = model(obs_mx, masks_mx)
+                mx.eval(logits, values)
 
-            if rollout_num == 0 and step == 0:
-                dash.phase = "rollout"
+                actions = np.zeros(cfg["n_envs"], dtype=np.int32)
+                log_probs_np = np.zeros(cfg["n_envs"], dtype=np.float32)
 
-            actions = np.zeros(cfg["n_envs"], dtype=np.int32)
-            log_probs_np = np.zeros(cfg["n_envs"], dtype=np.float32)
+                logits_np = np.array(logits)
+                values_np = np.array(values).squeeze(-1)
 
-            logits_np = np.array(logits)
-            values_np = np.array(values).squeeze(-1)
+                for i in range(cfg["n_envs"]):
+                    action_idx, log_prob = _sample_action_np(logits_np[i])
+                    actions[i] = action_idx
+                    log_probs_np[i] = log_prob
 
-            for i in range(cfg["n_envs"]):
-                action_idx, log_prob = _sample_action_np(logits_np[i])
-                actions[i] = action_idx
-                log_probs_np[i] = log_prob
+                next_obs, rewards, dones, next_masks, infos = vec_env.step(actions)
 
-            next_obs, rewards, dones, next_masks, infos = vec_env.step(actions)
+                # Update dashboard per-agent and per-episode
+                for i in range(cfg["n_envs"]):
+                    dash.update_step(i, infos[i], rewards[i])
 
-            for i in range(cfg["n_envs"]):
-                if dones[i]:
-                    dash.episodes += 1
-                    dash.recent_rewards.append(rewards[i])
-                    goal_met = infos[i].get("final_stage_goal_met", False)
-                    dash.recent_goals.append(float(goal_met))
-                    dash.episode_results.append({"stage_goal_met": goal_met})
+                    if dones[i]:
+                        episode_counter += 1
+                        goal_met = infos[i].get("final_stage_goal_met", False)
+                        died = infos[i].get("died", False)
+                        step_count = infos[i].get("final_step_count", 0)
+                        skill_name = infos[i].get("skill_result", {}).get("skill_name", "")
 
-            buffer.add(obs, actions, log_probs_np, rewards, dones, values_np, masks)
-            obs = next_obs
-            masks = next_masks
+                        detail = skill_name if goal_met else ("died" if died else "timeout")
+                        dash.record_episode(episode_counter, step_count, rewards[i], goal_met, died, detail)
+                        episode_results.append({"stage_goal_met": goal_met})
 
-            if step % 32 == 0:
-                dash.total_steps = rollout_num * steps_per_rollout + step * cfg["n_envs"]
-                elapsed = time.time() - t_start
-                dash.cur_sps = int(dash.total_steps / elapsed) if elapsed > 0 else 0
-                dash.render()
+                buffer.add(obs, actions, log_probs_np, rewards, dones, values_np, masks)
+                obs = next_obs
+                masks = next_masks
 
-        rollout_num += 1
-        dash.total_steps = rollout_num * steps_per_rollout
+                if step % 32 == 0:
+                    total = rollout_num * steps_per_rollout + step * cfg["n_envs"]
+                    elapsed = time.time() - t_start
+                    sps = int(total / elapsed) if elapsed > 0 else 0
+                    dash.update_progress(total, sps, phase, shaping_w)
+                    dash.render()
 
-        # Compute advantages
-        dash.phase = "update"
-        dash.render(force=True)
+            rollout_num += 1
+            total_steps = rollout_num * steps_per_rollout
 
-        _, last_values = model(mx.array(obs), mx.array(masks))
-        mx.eval(last_values)
-        last_values_np = np.array(last_values).squeeze(-1)
+            # Compute advantages
+            dash.update_progress(total_steps, dash.sps, "computing GAE", shaping_w)
+            dash.render(force=True)
 
-        advantages, returns = buffer.compute_gae(last_values_np, cfg["gamma"], cfg["gae_lambda"])
+            _, last_values = model(mx.array(obs), mx.array(masks))
+            mx.eval(last_values)
+            last_values_np = np.array(last_values).squeeze(-1)
 
-        adv_mean = advantages.mean()
-        adv_std = advantages.std() + 1e-8
-        advantages = (advantages - adv_mean) / adv_std
+            advantages, returns = buffer.compute_gae(last_values_np, cfg["gamma"], cfg["gae_lambda"])
 
-        # PPO update
-        total_loss = 0.0
-        total_pg = 0.0
-        total_vf = 0.0
-        total_ent = 0.0
-        n_updates = 0
+            adv_mean = advantages.mean()
+            adv_std = advantages.std() + 1e-8
+            advantages = (advantages - adv_mean) / adv_std
 
-        loss_and_grad_fn = nn.value_and_grad(model, _ppo_loss)
+            # PPO update
+            total_loss = 0.0
+            total_pg = 0.0
+            total_vf = 0.0
+            total_ent = 0.0
+            n_updates = 0
 
-        for epoch in range(cfg["n_epochs"]):
-            for batch in buffer.get_batches(advantages, returns, cfg["batch_size"]):
-                b_obs, b_actions, b_old_log_probs, b_advantages, b_returns, b_masks = batch
+            loss_and_grad_fn = nn.value_and_grad(model, _ppo_loss)
 
-                (loss, (pg_l, vf_l, ent_l)), grads = loss_and_grad_fn(
-                    model, b_obs, b_actions, b_old_log_probs,
-                    b_advantages, b_returns, b_masks,
-                    cfg["clip_eps"], cfg["vf_coef"], cfg["ent_coef"],
-                )
-                mx.eval(loss, grads)
+            for epoch in range(cfg["n_epochs"]):
+                for batch in buffer.get_batches(advantages, returns, cfg["batch_size"]):
+                    b_obs, b_actions, b_old_log_probs, b_advantages, b_returns, b_masks = batch
 
-                loss_val = loss.item()
-                if np.isnan(loss_val) or np.isinf(loss_val):
-                    continue
+                    (loss, (pg_l, vf_l, ent_l)), grads = loss_and_grad_fn(
+                        model, b_obs, b_actions, b_old_log_probs,
+                        b_advantages, b_returns, b_masks,
+                        cfg["clip_eps"], cfg["vf_coef"], cfg["ent_coef"],
+                    )
+                    mx.eval(loss, grads)
 
-                grads = _clip_grad_norm(grads, cfg["max_grad_norm"])
-                optimizer.update(model, grads)
-                mx.eval(model.parameters(), optimizer.state)
+                    loss_val = loss.item()
+                    if np.isnan(loss_val) or np.isinf(loss_val):
+                        continue
 
-                n_updates += 1
-                total_loss += loss_val
-                total_pg += pg_l.item()
-                total_vf += vf_l.item()
-                total_ent += ent_l.item()
+                    grads = _clip_grad_norm(grads, cfg["max_grad_norm"])
+                    optimizer.update(model, grads)
+                    mx.eval(model.parameters(), optimizer.state)
 
-                dash.cur_loss = total_loss / n_updates
-                dash.cur_pg_loss = total_pg / n_updates
-                dash.cur_vf_loss = total_vf / n_updates
-                dash.cur_entropy = total_ent / n_updates
-                dash.phase = f"update {epoch+1}/{cfg['n_epochs']}"
-                dash.render()
+                    n_updates += 1
+                    total_loss += loss_val
+                    total_pg += pg_l.item()
+                    total_vf += vf_l.item()
+                    total_ent += ent_l.item()
 
-        elapsed = time.time() - t_start
-        dash.cur_sps = int(dash.total_steps / elapsed) if elapsed > 0 else 0
+                    if n_updates > 0:
+                        dash.update_training(
+                            total_loss / n_updates,
+                            total_pg / n_updates,
+                            total_vf / n_updates,
+                            total_ent / n_updates,
+                        )
+                    dash.update_progress(total_steps, dash.sps, f"update {epoch+1}/{cfg['n_epochs']}", shaping_w)
+                    dash.render()
 
-        avg_rwd = dash._avg_reward()
-        dash.reward_history.append((dash.total_steps, avg_rwd))
+            elapsed = time.time() - t_start
+            sps = int(total_steps / elapsed) if elapsed > 0 else 0
+            dash.update_progress(total_steps, sps, "rollout", shaping_w)
 
-        goal_rate = dash._goal_rate()
-        if goal_rate > best_goal_rate:
-            best_goal_rate = goal_rate
-            save_model(model, save_dir / "model_best.npz")
+            goal_rate = dash._goal_rate()
+            if goal_rate > best_goal_rate:
+                best_goal_rate = goal_rate
+                dash.best_goal_rate = best_goal_rate
+                save_model(model, save_dir / "model_best.npz")
 
-        # Log data
-        log_data.append({
-            "steps": dash.total_steps,
-            "avg_reward": round(avg_rwd, 3),
-            "goal_rate": round(goal_rate, 3),
-            "episodes": dash.episodes,
-            "loss": round(dash.cur_loss, 4) if n_updates > 0 else None,
-        })
+            # Log data
+            log_data.append({
+                "steps": total_steps,
+                "avg_reward": round(dash._avg_reward(), 3),
+                "goal_rate": round(goal_rate, 3),
+                "episodes": episode_counter,
+                "loss": round(dash.cur_loss, 4) if n_updates > 0 else None,
+            })
 
-        dash.render(force=True)
+            dash.render(force=True)
 
-        # Check promotion
-        if check_promotion(stage, dash.episode_results):
-            print(f"\n\n  {GREEN}{BOLD}PROMOTED!{RESET} Stage {stage} → {stage + 1}")
-            with open(save_dir / "training_log.json", "w") as f:
-                json.dump(log_data, f, indent=2)
-            return model, True
+            # Check promotion
+            if check_promotion(stage, episode_results):
+                dash.stop()
+                print(f"\n  {GREEN}{BOLD}PROMOTED!{RESET} Stage {stage} → {stage + 1}")
+                with open(save_dir / "training_log.json", "w") as f:
+                    json.dump(log_data, f, indent=2)
+                return model, True
+
+    finally:
+        dash.stop()
 
     # Budget exhausted
     with open(save_dir / "training_log.json", "w") as f:
         json.dump(log_data, f, indent=2)
     save_model(model, save_dir / "model_best.npz")
 
-    dash.phase = "done"
-    dash.render(force=True)
-    print(f"\n  Stage {stage} complete: {dash.episodes} episodes in {_fmt_duration(time.time() - t_start)}")
+    print(f"\n  Stage {stage} complete: {episode_counter} episodes in {_fmt_duration(time.time() - t_start)}")
     print(f"  Best goal rate: {best_goal_rate*100:.0f}%")
 
     return model, False
