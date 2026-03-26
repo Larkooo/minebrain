@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+build/
+.venv/
+node_modules/
+models/*.npz
+*.log
+.DS_Store
+bot/target/
