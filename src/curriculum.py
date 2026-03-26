@@ -6,6 +6,8 @@ Each stage has its own reward function, skill unlocks, promotion criteria,
 and reward shaping with annealing (adapted from nums-ai).
 """
 
+from __future__ import annotations
+
 from dataclasses import dataclass, field
 import numpy as np
 

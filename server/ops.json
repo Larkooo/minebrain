@@ -1,29 +1,5 @@
 [
   {
-    "uuid": "00000000-0000-0000-0000-000000000000",
-    "name": "minebrain_0",
-    "level": 4,
-    "bypassesPlayerLimit": true
-  },
-  {
-    "uuid": "00000000-0000-0000-0000-000000000001",
-    "name": "minebrain_1",
-    "level": 4,
-    "bypassesPlayerLimit": true
-  },
-  {
-    "uuid": "00000000-0000-0000-0000-000000000002",
-    "name": "minebrain_2",
-    "level": 4,
-    "bypassesPlayerLimit": true
-  },
-  {
-    "uuid": "00000000-0000-0000-0000-000000000003",
-    "name": "minebrain_3",
-    "level": 4,
-    "bypassesPlayerLimit": true
-  },
-  {
     "uuid": "00000000-0000-0000-0000-000000000004",
     "name": "minebrain_4",
     "level": 4,
@@ -44,6 +20,30 @@
   {
     "uuid": "00000000-0000-0000-0000-000000000007",
     "name": "minebrain_7",
+    "level": 4,
+    "bypassesPlayerLimit": true
+  },
+  {
+    "uuid": "00000000-0000-0000-0000-000000000000",
+    "name": "minebrain_0",
+    "level": 4,
+    "bypassesPlayerLimit": true
+  },
+  {
+    "uuid": "00000000-0000-0000-0000-000000000001",
+    "name": "minebrain_1",
+    "level": 4,
+    "bypassesPlayerLimit": true
+  },
+  {
+    "uuid": "00000000-0000-0000-0000-000000000002",
+    "name": "minebrain_2",
+    "level": 4,
+    "bypassesPlayerLimit": true
+  },
+  {
+    "uuid": "00000000-0000-0000-0000-000000000003",
+    "name": "minebrain_3",
     "level": 4,
     "bypassesPlayerLimit": true
   }

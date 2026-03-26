@@ -6,6 +6,8 @@ normalized ~310-feature vector, following the same philosophy as nums-ai's
 83-feature observation: hand-engineered, well-documented, all in [0, 1].
 """
 
+from __future__ import annotations
+
 import numpy as np
 
 OBS_SIZE = 310

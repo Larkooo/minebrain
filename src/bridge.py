@@ -5,6 +5,8 @@ Handles async communication between the Python training loop and the
 Node.js bot server. Supports multiple environments (one bot per env_id).
 """
 
+from __future__ import annotations
+
 import asyncio
 import json
 import logging

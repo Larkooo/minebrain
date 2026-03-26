@@ -6,6 +6,8 @@ Supports action masking for variable valid skills per state.
 Adapted from nums-ai/src/model.py with larger input and one extra hidden layer.
 """
 
+from __future__ import annotations
+
 import mlx.core as mx
 import mlx.nn as nn
 import numpy as np

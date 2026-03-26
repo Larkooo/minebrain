@@ -5,6 +5,8 @@ Rich-based TUI that shows per-agent activity, skill usage, curriculum
 progression, training metrics, and recent episode history.
 """
 
+from __future__ import annotations
+
 import time
 from collections import deque
 from dataclasses import dataclass, field

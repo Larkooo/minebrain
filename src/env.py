@@ -5,6 +5,8 @@ Provides MinecraftEnv (single env) and AsyncVecEnv (parallel environments)
 with action masking, frame stacking, and curriculum integration.
 """
 
+from __future__ import annotations
+
 import gymnasium as gym
 import numpy as np
 from gymnasium import spaces

@@ -5,6 +5,8 @@ Defines all 72 macro-action skills the agent can execute, organized by category.
 Each skill has preconditions (for action masking) and curriculum stage gating.
 """
 
+from __future__ import annotations
+
 from dataclasses import dataclass
 from enum import IntEnum
 import numpy as np

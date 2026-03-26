@@ -11,6 +11,8 @@ Usage:
     python -m src.evaluate --stochastic         # Stochastic policy
 """
 
+from __future__ import annotations
+
 import argparse
 import time
 from collections import Counter

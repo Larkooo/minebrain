@@ -11,6 +11,8 @@ Usage:
     python -m src.train --eval-only --stage 0   # Evaluate Stage 0 model
 """
 
+from __future__ import annotations
+
 import argparse
 import json
 import os
