@@ -260,7 +260,7 @@ pub fn get_action_mask(bot: &Client, stage: u8) -> Vec<bool> {
         0
     };
 
-    let world_name = bot.world_name().to_string();
+    let world_name = bot.component::<azalea::world::InstanceName>().to_string();
     let is_overworld = !world_name.contains("nether") && !world_name.contains("end");
     let is_nether = world_name.contains("nether");
     let is_end = world_name.contains("end");

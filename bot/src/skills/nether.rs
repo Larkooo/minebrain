@@ -39,26 +39,35 @@ pub async fn build_nether_portal(bot: &Client) -> SkillResult {
 pub async fn enter_nether_portal(bot: &Client) -> SkillResult {
     let pos = bot.position();
     let center = BlockPos::new(pos.x as i32, pos.y as i32, pos.z as i32);
-    let world = bot.world();
-    let world_lock = world.read();
 
-    for dx in -32..=32 {
-        for dy in -8..=8 {
-            for dz in -32..=32 {
-                let bpos = BlockPos::new(center.x + dx, center.y + dy, center.z + dz);
-                if let Some(state) = world_lock.get_block_state(bpos) {
-                    if format!("{state:?}").to_lowercase().contains("nether_portal") {
-                        drop(world_lock);
-                        let _ = tokio::time::timeout(
-                            Duration::from_secs(10),
-                            bot.goto(BlockPosGoal(bpos)),
-                        ).await;
-                        bot.wait_ticks(100).await; // Wait for teleport
-                        return SkillResult::ok("enter_nether_portal");
+    let portal_pos = {
+        let world = bot.world();
+        let world_lock = world.read();
+        let mut found = None;
+
+        'search: for dx in -32..=32 {
+            for dy in -8..=8 {
+                for dz in -32..=32 {
+                    let bpos = BlockPos::new(center.x + dx, center.y + dy, center.z + dz);
+                    if let Some(state) = world_lock.get_block_state(bpos) {
+                        if format!("{state:?}").to_lowercase().contains("nether_portal") {
+                            found = Some(bpos);
+                            break 'search;
+                        }
                     }
                 }
             }
         }
+        found
+    };
+
+    if let Some(bpos) = portal_pos {
+        let _ = tokio::time::timeout(
+            Duration::from_secs(10),
+            bot.goto(BlockPosGoal(bpos)),
+        ).await;
+        bot.wait_ticks(100).await; // Wait for teleport
+        return SkillResult::ok("enter_nether_portal");
     }
 
     SkillResult::failure("enter_nether_portal", "no portal found")
@@ -67,32 +76,40 @@ pub async fn enter_nether_portal(bot: &Client) -> SkillResult {
 pub async fn find_nether_fortress(bot: &Client) -> SkillResult {
     // Search for nether bricks (fortress indicator)
     let pos = bot.position();
-    let world = bot.world();
-    let world_lock = world.read();
 
-    for dx in -64..=64 {
-        for dy in -16..=16 {
-            for dz in -64..=64 {
-                if (dx * dx + dy * dy + dz * dz) > 64 * 64 { continue; }
-                let bpos = BlockPos::new(
-                    pos.x as i32 + dx,
-                    pos.y as i32 + dy,
-                    pos.z as i32 + dz,
-                );
-                if let Some(state) = world_lock.get_block_state(bpos) {
-                    if format!("{state:?}").to_lowercase().contains("nether_brick") {
-                        drop(world_lock);
-                        let _ = tokio::time::timeout(
-                            Duration::from_secs(30),
-                            bot.goto(BlockPosGoal(bpos)),
-                        ).await;
-                        return SkillResult::ok("find_nether_fortress");
+    let fortress_pos = {
+        let world = bot.world();
+        let world_lock = world.read();
+        let mut found = None;
+
+        'search: for dx in -64..=64 {
+            for dy in -16..=16 {
+                for dz in -64..=64 {
+                    if (dx * dx + dy * dy + dz * dz) > 64 * 64 { continue; }
+                    let bpos = BlockPos::new(
+                        pos.x as i32 + dx,
+                        pos.y as i32 + dy,
+                        pos.z as i32 + dz,
+                    );
+                    if let Some(state) = world_lock.get_block_state(bpos) {
+                        if format!("{state:?}").to_lowercase().contains("nether_brick") {
+                            found = Some(bpos);
+                            break 'search;
+                        }
                     }
                 }
             }
         }
+        found
+    };
+
+    if let Some(bpos) = fortress_pos {
+        let _ = tokio::time::timeout(
+            Duration::from_secs(30),
+            bot.goto(BlockPosGoal(bpos)),
+        ).await;
+        return SkillResult::ok("find_nether_fortress");
     }
-    drop(world_lock);
 
     // Not found, explore in +Z direction (fortresses generate along Z axis)
     let target = BlockPos::new(

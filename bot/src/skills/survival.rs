@@ -1,7 +1,6 @@
 //! Survival skills: eating, sleeping, building, equipment management.
 
 use azalea::prelude::*;
-use std::time::Duration;
 
 use super::SkillResult;
 
@@ -17,25 +16,33 @@ pub async fn sleep_in_bed(bot: &Client) -> SkillResult {
     let pos = bot.position();
     let center = azalea::BlockPos::new(pos.x as i32, pos.y as i32, pos.z as i32);
 
-    let world = bot.world();
-    let world_lock = world.read();
+    let bed_pos = {
+        let world = bot.world();
+        let world_lock = world.read();
+        let mut found = None;
 
-    // Search for bed
-    for dx in -16..=16 {
-        for dy in -4..=4 {
-            for dz in -16..=16 {
-                let bpos = azalea::BlockPos::new(center.x + dx, center.y + dy, center.z + dz);
-                if let Some(state) = world_lock.get_block_state(bpos) {
-                    let name = format!("{state:?}").to_lowercase();
-                    if name.contains("bed") {
-                        drop(world_lock);
-                        bot.block_interact(bpos);
-                        bot.wait_ticks(60).await;
-                        return SkillResult::ok("sleep_in_bed");
+        // Search for bed
+        'search: for dx in -16..=16 {
+            for dy in -4..=4 {
+                for dz in -16..=16 {
+                    let bpos = azalea::BlockPos::new(center.x + dx, center.y + dy, center.z + dz);
+                    if let Some(state) = world_lock.get_block_state(bpos) {
+                        let name = format!("{state:?}").to_lowercase();
+                        if name.contains("bed") {
+                            found = Some(bpos);
+                            break 'search;
+                        }
                     }
                 }
             }
         }
+        found
+    }; // world_lock dropped here
+
+    if let Some(bpos) = bed_pos {
+        bot.block_interact(bpos);
+        bot.wait_ticks(60).await;
+        return SkillResult::ok("sleep_in_bed");
     }
 
     SkillResult::failure("sleep_in_bed", "no bed found")
@@ -94,7 +101,7 @@ pub async fn retreat_from_danger(bot: &Client) -> SkillResult {
     SkillResult::ok("retreat_from_danger")
 }
 
-pub async fn equip_best_gear(bot: &Client) -> SkillResult {
+pub async fn equip_best_gear(_bot: &Client) -> SkillResult {
     // Auto-equip handled by looking through inventory slots
     // In practice, would click-move armor pieces to armor slots
     SkillResult::ok("equip_best_gear")
@@ -106,7 +113,7 @@ pub async fn wait_idle(bot: &Client) -> SkillResult {
 }
 
 pub async fn look_around(bot: &Client) -> SkillResult {
-    let yaw = bot.direction().y_rot();
+    let yaw = bot.direction().0;
     for i in 0..4 {
         bot.set_direction(yaw + (i as f32) * 90.0, 0.0);
         bot.wait_ticks(6).await;
@@ -114,12 +121,12 @@ pub async fn look_around(bot: &Client) -> SkillResult {
     SkillResult::ok("look_around")
 }
 
-pub async fn drop_junk_items(bot: &Client) -> SkillResult {
+pub async fn drop_junk_items(_bot: &Client) -> SkillResult {
     // Would iterate inventory and drop low-value items
     SkillResult::ok("drop_junk_items")
 }
 
-pub async fn organize_inventory(bot: &Client) -> SkillResult {
+pub async fn organize_inventory(_bot: &Client) -> SkillResult {
     SkillResult::ok("organize_inventory")
 }
 

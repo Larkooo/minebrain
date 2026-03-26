@@ -29,30 +29,39 @@ pub async fn explore_randomly(bot: &Client) -> SkillResult {
 pub async fn explore_for_cave(bot: &Client) -> SkillResult {
     // Search for air below surface level
     let pos = bot.position();
-    let world = bot.world();
-    let world_lock = world.read();
 
-    for radius in [10, 20, 30] {
-        for i in 0..8 {
-            let angle = (i as f64 / 8.0) * std::f64::consts::TAU;
-            let x = pos.x as i32 + (angle.cos() * radius as f64) as i32;
-            let z = pos.z as i32 + (angle.sin() * radius as f64) as i32;
+    let cave_pos = {
+        let world = bot.world();
+        let world_lock = world.read();
+        let mut found = None;
 
-            for y in ((pos.y as i32 - 30).max(5))..=(pos.y as i32 - 5) {
-                let bpos = BlockPos::new(x, y, z);
-                if let Some(state) = world_lock.get_block_state(bpos) {
-                    let name = format!("{state:?}").to_lowercase();
-                    if name.contains("air") || name.contains("cave") {
-                        drop(world_lock);
-                        let _ = tokio::time::timeout(
-                            Duration::from_secs(12),
-                            bot.goto(BlockPosGoal(bpos)),
-                        ).await;
-                        return SkillResult::ok("explore_for_cave");
+        'search: for radius in [10, 20, 30] {
+            for i in 0..8 {
+                let angle = (i as f64 / 8.0) * std::f64::consts::TAU;
+                let x = pos.x as i32 + (angle.cos() * radius as f64) as i32;
+                let z = pos.z as i32 + (angle.sin() * radius as f64) as i32;
+
+                for y in ((pos.y as i32 - 30).max(5))..=(pos.y as i32 - 5) {
+                    let bpos = BlockPos::new(x, y, z);
+                    if let Some(state) = world_lock.get_block_state(bpos) {
+                        let name = format!("{state:?}").to_lowercase();
+                        if name.contains("air") || name.contains("cave") {
+                            found = Some(bpos);
+                            break 'search;
+                        }
                     }
                 }
             }
         }
+        found
+    }; // world_lock dropped here
+
+    if let Some(bpos) = cave_pos {
+        let _ = tokio::time::timeout(
+            Duration::from_secs(12),
+            bot.goto(BlockPosGoal(bpos)),
+        ).await;
+        return SkillResult::ok("explore_for_cave");
     }
 
     SkillResult::failure("explore_for_cave", "no cave found")
@@ -75,8 +84,8 @@ pub async fn descend_to_mining_level(bot: &Client) -> SkillResult {
     // Dig staircase: mine block ahead and below repeatedly
     let mut current = BlockPos::new(pos.x as i32, pos.y as i32, pos.z as i32);
     let direction = bot.direction();
-    let dx = -(direction.y_rot().to_radians().sin()) as i32;
-    let dz = -(direction.y_rot().to_radians().cos()) as i32;
+    let dx = -(direction.0.to_radians().sin()) as i32;
+    let dz = -(direction.0.to_radians().cos()) as i32;
 
     for _ in 0..50 {
         if current.y <= target_y { break; }
@@ -141,7 +150,7 @@ pub async fn ascend_to_surface(bot: &Client) -> SkillResult {
 }
 
 pub async fn throw_eye_of_ender(bot: &Client) -> SkillResult {
-    bot.set_direction(bot.direction().y_rot(), -15.0); // Look slightly up
+    bot.set_direction(bot.direction().0, -15.0); // Look slightly up
     bot.start_use_item();
     bot.wait_ticks(40).await;
     SkillResult::ok("throw_eye_of_ender")
@@ -153,7 +162,7 @@ pub async fn go_to_stronghold(bot: &Client) -> SkillResult {
 
     let pos = bot.position();
     let dir = bot.direction();
-    let yaw_rad = dir.y_rot().to_radians();
+    let yaw_rad = dir.0.to_radians();
     let target = BlockPos::new(
         (pos.x - (yaw_rad.sin() as f64) * 100.0) as i32,
         pos.y as i32,
@@ -172,40 +181,49 @@ pub async fn fill_bucket_with_water(bot: &Client) -> SkillResult {
     // Find water and right-click with bucket
     let pos = bot.position();
     let center = BlockPos::new(pos.x as i32, pos.y as i32, pos.z as i32);
-    let world = bot.world();
-    let world_lock = world.read();
 
-    for dx in -16..=16 {
-        for dy in -8..=8 {
-            for dz in -16..=16 {
-                let bpos = BlockPos::new(center.x + dx, center.y + dy, center.z + dz);
-                if let Some(state) = world_lock.get_block_state(bpos) {
-                    if format!("{state:?}").to_lowercase().contains("water") {
-                        drop(world_lock);
-                        let _ = tokio::time::timeout(
-                            Duration::from_secs(8),
-                            bot.goto(RadiusGoal::new(
-                                azalea::Vec3::new(bpos.x as f64, bpos.y as f64, bpos.z as f64),
-                                3.0,
-                            )),
-                        ).await;
-                        bot.block_interact(bpos);
-                        bot.wait_ticks(5).await;
-                        return SkillResult::ok("fill_bucket_with_water");
+    let water_pos = {
+        let world = bot.world();
+        let world_lock = world.read();
+        let mut found = None;
+
+        'search: for dx in -16..=16 {
+            for dy in -8..=8 {
+                for dz in -16..=16 {
+                    let bpos = BlockPos::new(center.x + dx, center.y + dy, center.z + dz);
+                    if let Some(state) = world_lock.get_block_state(bpos) {
+                        if format!("{state:?}").to_lowercase().contains("water") {
+                            found = Some(bpos);
+                            break 'search;
+                        }
                     }
                 }
             }
         }
+        found
+    };
+
+    if let Some(bpos) = water_pos {
+        let _ = tokio::time::timeout(
+            Duration::from_secs(8),
+            bot.goto(RadiusGoal::new(
+                azalea::Vec3::new(bpos.x as f64, bpos.y as f64, bpos.z as f64),
+                3.0,
+            )),
+        ).await;
+        bot.block_interact(bpos);
+        bot.wait_ticks(5).await;
+        return SkillResult::ok("fill_bucket_with_water");
     }
 
     SkillResult::failure("fill_bucket_with_water", "no water nearby")
 }
 
-pub async fn fill_bucket_with_lava(bot: &Client) -> SkillResult {
+pub async fn fill_bucket_with_lava(_bot: &Client) -> SkillResult {
     SkillResult::failure("fill_bucket_with_lava", "not yet implemented")
 }
 
-pub async fn create_infinite_water(bot: &Client) -> SkillResult {
+pub async fn create_infinite_water(_bot: &Client) -> SkillResult {
     SkillResult::failure("create_infinite_water", "not yet implemented")
 }
 

@@ -2,7 +2,9 @@
 
 use azalea::prelude::*;
 use azalea::entity::metadata::AbstractMonster;
+use azalea::entity::{LocalEntity, Position};
 use azalea::pathfinder::goals::*;
+use azalea::ecs::query::{With, Without};
 use std::time::Duration;
 
 use super::SkillResult;
@@ -10,17 +12,17 @@ use super::SkillResult;
 pub async fn attack_nearest_hostile(bot: &Client) -> SkillResult {
     let bot_pos = bot.eye_position();
 
-    let monster = bot.nearest_entity_by::<&azalea::entity::Position, (
-        azalea::ecs::query::With<AbstractMonster>,
-        azalea::ecs::query::Without<azalea::entity::LocalEntity>,
-    )>(|pos| bot_pos.distance_to(**pos) < 16.0);
+    let monster = bot.nearest_entity_by::<&Position, (
+        With<AbstractMonster>,
+        Without<LocalEntity>,
+    )>(|pos: &Position| bot_pos.distance_to(**pos) < 16.0);
 
     let Some(entity) = monster else {
         return SkillResult::failure("attack_nearest_hostile", "no hostile mob nearby");
     };
 
     // Navigate close and attack
-    let target_pos = entity.position();
+    let target_pos: azalea::Vec3 = (*bot.entity_component::<Position>(entity)).into();
     let _ = tokio::time::timeout(
         Duration::from_secs(8),
         bot.goto(RadiusGoal::new(target_pos, 3.0)),
@@ -31,7 +33,7 @@ pub async fn attack_nearest_hostile(bot: &Client) -> SkillResult {
             bot.wait_ticks(2).await;
             continue;
         }
-        entity.attack();
+        bot.attack(entity);
         bot.wait_ticks(10).await;
     }
 
@@ -65,7 +67,7 @@ pub async fn fight_enderman(bot: &Client) -> SkillResult {
     attack_nearest_hostile(bot).await
 }
 
-pub async fn trade_with_villager(bot: &Client) -> SkillResult {
+pub async fn trade_with_villager(_bot: &Client) -> SkillResult {
     // Simplified: navigate to area and attempt trade
     SkillResult::failure("trade_with_villager", "not yet implemented")
 }

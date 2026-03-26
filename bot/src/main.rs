@@ -80,31 +80,6 @@ struct ErrorResult {
     skill_result: SkillResult,
 }
 
-// ── Bot State for Azalea Handler ──
-
-#[derive(Clone, Component, Default)]
-struct BotState {
-    env_id: u32,
-}
-
-/// Azalea event handler for each bot.
-async fn handle_bot_event(
-    bot: Client,
-    event: Event,
-    _state: BotState,
-) -> eyre::Result<()> {
-    match event {
-        Event::Spawn => {
-            info!("Bot spawned: {}", bot.username());
-        }
-        Event::Death(_) => {
-            info!("Bot died: {}", bot.username());
-        }
-        _ => {}
-    }
-    Ok(())
-}
-
 // ── Server ──
 
 const DEFAULT_PORT: u16 = 8765;
@@ -240,13 +215,12 @@ async fn handle_reset(
         let account = Account::offline(&username);
         let addr = format!("{mc_host}:{}", mc_port + env_id as u16);
 
-        match ClientBuilder::new()
-            .set_handler(handle_bot_event)
-            .start(account, &addr)
-            .await
-        {
-            AppExit::Success => {}
-            AppExit::Error(e) => {
+        match Client::join(account, addr.as_str()).await {
+            Ok((client, _rx)) => {
+                let mut lock = bots.write();
+                lock.insert(env_id, BotEnv { client, stage });
+            }
+            Err(e) => {
                 return serde_json::to_string(&ErrorResult {
                     msg_type: "reset_result".into(),
                     error: format!("Failed to connect bot: {e:?}"),
@@ -261,9 +235,12 @@ async fn handle_reset(
     }
 
     // Reset via chat commands if bot exists
-    let lock = bots.read();
-    if let Some(env) = lock.get(&env_id) {
-        let bot = &env.client;
+    let bot = {
+        let lock = bots.read();
+        lock.get(&env_id).map(|env| env.client.clone())
+    }; // lock dropped here before any await
+
+    if let Some(bot) = bot {
         bot.chat("/tp @s 0 64 0");
         bot.chat("/clear @s");
         bot.chat("/effect clear @s");
@@ -276,8 +253,8 @@ async fn handle_reset(
 
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
-        let raw_state = collect_observation(bot, stage);
-        let action_mask = get_action_mask(bot, stage);
+        let raw_state = collect_observation(&bot, stage);
+        let action_mask = get_action_mask(&bot, stage);
 
         return serde_json::to_string(&ResetResult {
             msg_type: "reset_result".into(),
@@ -287,7 +264,6 @@ async fn handle_reset(
         })
         .unwrap();
     }
-    drop(lock);
 
     // Fallback: return empty state
     serde_json::to_string(&ResetResult {

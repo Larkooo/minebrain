@@ -11,23 +11,25 @@ pub async fn activate_end_portal(bot: &Client) -> SkillResult {
     // Find end portal frames and place eyes
     let pos = bot.position();
     let center = BlockPos::new(pos.x as i32, pos.y as i32, pos.z as i32);
-    let world = bot.world();
-    let world_lock = world.read();
 
-    let mut frames = Vec::new();
-    for dx in -32..=32 {
-        for dy in -8..=8 {
-            for dz in -32..=32 {
-                let bpos = BlockPos::new(center.x + dx, center.y + dy, center.z + dz);
-                if let Some(state) = world_lock.get_block_state(bpos) {
-                    if format!("{state:?}").to_lowercase().contains("end_portal_frame") {
-                        frames.push(bpos);
+    let frames = {
+        let world = bot.world();
+        let world_lock = world.read();
+        let mut found = Vec::new();
+        for dx in -32..=32 {
+            for dy in -8..=8 {
+                for dz in -32..=32 {
+                    let bpos = BlockPos::new(center.x + dx, center.y + dy, center.z + dz);
+                    if let Some(state) = world_lock.get_block_state(bpos) {
+                        if format!("{state:?}").to_lowercase().contains("end_portal_frame") {
+                            found.push(bpos);
+                        }
                     }
                 }
             }
         }
-    }
-    drop(world_lock);
+        found
+    };
 
     if frames.is_empty() {
         return SkillResult::failure("activate_end_portal", "no portal frames found");
@@ -52,28 +54,37 @@ pub async fn activate_end_portal(bot: &Client) -> SkillResult {
 pub async fn enter_end_portal(bot: &Client) -> SkillResult {
     let pos = bot.position();
     let center = BlockPos::new(pos.x as i32, pos.y as i32, pos.z as i32);
-    let world = bot.world();
-    let world_lock = world.read();
 
-    for dx in -16..=16 {
-        for dy in -4..=4 {
-            for dz in -16..=16 {
-                let bpos = BlockPos::new(center.x + dx, center.y + dy, center.z + dz);
-                if let Some(state) = world_lock.get_block_state(bpos) {
-                    if format!("{state:?}").to_lowercase().contains("end_portal")
-                        && !format!("{state:?}").to_lowercase().contains("frame")
-                    {
-                        drop(world_lock);
-                        let _ = tokio::time::timeout(
-                            Duration::from_secs(8),
-                            bot.goto(BlockPosGoal(bpos)),
-                        ).await;
-                        bot.wait_ticks(100).await;
-                        return SkillResult::ok("enter_end_portal");
+    let portal_pos = {
+        let world = bot.world();
+        let world_lock = world.read();
+        let mut found = None;
+
+        'search: for dx in -16..=16 {
+            for dy in -4..=4 {
+                for dz in -16..=16 {
+                    let bpos = BlockPos::new(center.x + dx, center.y + dy, center.z + dz);
+                    if let Some(state) = world_lock.get_block_state(bpos) {
+                        if format!("{state:?}").to_lowercase().contains("end_portal")
+                            && !format!("{state:?}").to_lowercase().contains("frame")
+                        {
+                            found = Some(bpos);
+                            break 'search;
+                        }
                     }
                 }
             }
         }
+        found
+    };
+
+    if let Some(bpos) = portal_pos {
+        let _ = tokio::time::timeout(
+            Duration::from_secs(8),
+            bot.goto(BlockPosGoal(bpos)),
+        ).await;
+        bot.wait_ticks(100).await;
+        return SkillResult::ok("enter_end_portal");
     }
 
     SkillResult::failure("enter_end_portal", "no end portal found")
@@ -94,7 +105,7 @@ pub async fn kill_end_crystal(bot: &Client) -> SkillResult {
 
 pub async fn attack_ender_dragon(bot: &Client) -> SkillResult {
     // Navigate to center fountain and attack when dragon perches
-    let fountain = BlockPos::new(0, 64, 0);
+    let _fountain = BlockPos::new(0, 64, 0);
     let _ = tokio::time::timeout(
         Duration::from_secs(10),
         bot.goto(RadiusGoal::new(azalea::Vec3::new(0.0, 64.0, 0.0), 5.0)),
@@ -121,7 +132,7 @@ pub async fn use_bed_on_dragon(bot: &Client) -> SkillResult {
     bot.wait_ticks(3).await;
 
     let bed_pos = BlockPos::new(pos.x as i32, pos.y as i32, pos.z as i32);
-    bot.block_interact(bed_pos); // click bed → explosion
+    bot.block_interact(bed_pos); // click bed -> explosion
     bot.wait_ticks(10).await;
 
     SkillResult::ok("use_bed_on_dragon")
@@ -166,25 +177,34 @@ pub async fn pillar_to_crystal(bot: &Client) -> SkillResult {
 pub async fn collect_dragon_egg(bot: &Client) -> SkillResult {
     let pos = bot.position();
     let center = BlockPos::new(pos.x as i32, pos.y as i32, pos.z as i32);
-    let world = bot.world();
-    let world_lock = world.read();
 
-    for dx in -16..=16 {
-        for dy in -8..=16 {
-            for dz in -16..=16 {
-                let bpos = BlockPos::new(center.x + dx, center.y + dy, center.z + dz);
-                if let Some(state) = world_lock.get_block_state(bpos) {
-                    if format!("{state:?}").to_lowercase().contains("dragon_egg") {
-                        drop(world_lock);
-                        // Mine block below the egg (egg falls)
-                        let below = BlockPos::new(bpos.x, bpos.y - 1, bpos.z);
-                        bot.mine(below).await;
-                        bot.wait_ticks(10).await;
-                        return SkillResult::ok("collect_dragon_egg");
+    let egg_pos = {
+        let world = bot.world();
+        let world_lock = world.read();
+        let mut found = None;
+
+        'search: for dx in -16..=16 {
+            for dy in -8..=16 {
+                for dz in -16..=16 {
+                    let bpos = BlockPos::new(center.x + dx, center.y + dy, center.z + dz);
+                    if let Some(state) = world_lock.get_block_state(bpos) {
+                        if format!("{state:?}").to_lowercase().contains("dragon_egg") {
+                            found = Some(bpos);
+                            break 'search;
+                        }
                     }
                 }
             }
         }
+        found
+    };
+
+    if let Some(bpos) = egg_pos {
+        // Mine block below the egg (egg falls)
+        let below = BlockPos::new(bpos.x, bpos.y - 1, bpos.z);
+        bot.mine(below).await;
+        bot.wait_ticks(10).await;
+        return SkillResult::ok("collect_dragon_egg");
     }
 
     SkillResult::failure("collect_dragon_egg", "no dragon egg found")

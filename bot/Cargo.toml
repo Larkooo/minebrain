@@ -5,7 +5,7 @@ edition = "2021"
 description = "Azalea-based Minecraft bot server for MineBrain RL agent"
 
 [dependencies]
-azalea = "0.26.1"
+azalea = "0.15.1"
 tokio = { version = "1", features = ["full"] }
 tokio-tungstenite = "0.24"
 futures-util = "0.3"

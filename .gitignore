@@ -9,3 +9,17 @@ models/*.npz
 *.log
 .DS_Store
 bot/target/
+server/*.jar
+server/world/
+server/world_nether/
+server/world_the_end/
+server/logs/
+server/cache/
+server/libraries/
+server/versions/
+server/plugins/
+server/config/
+server/banned-*.json
+server/whitelist.json
+server/usercache.json
+server/.console_history

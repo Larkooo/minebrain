@@ -32,7 +32,7 @@ fn player_state(bot: &Client) -> Value {
         "food": hunger.food,
         "saturation": hunger.saturation,
         "armor": 0, // computed from inventory
-        "xp_level": bot.experience().level,
+        "xp_level": 0,  // Experience not tracked in azalea 0.15.1
         "is_on_fire": false,
         "is_in_water": false,
         "position": {
@@ -44,7 +44,7 @@ fn player_state(bot: &Client) -> Value {
 }
 
 fn world_state(bot: &Client) -> Value {
-    let world_name = bot.world_name().to_string();
+    let world_name = bot.component::<azalea::world::InstanceName>().to_string();
     let dimension = if world_name.contains("nether") {
         "the_nether"
     } else if world_name.contains("end") {
@@ -272,7 +272,7 @@ fn nearby_blocks(bot: &Client) -> Value {
     })
 }
 
-fn nearby_entities(bot: &Client) -> Value {
+fn nearby_entities(_bot: &Client) -> Value {
     // Query nearby entities using Azalea's ECS
     // Simplified: return defaults; full implementation would use
     // bot.nearest_entity_by with component filters
@@ -315,7 +315,7 @@ fn progress_state(bot: &Client, _stage: u8) -> Value {
     let blaze_rods = resources.get("blaze_rod").and_then(|v| v.as_u64()).unwrap_or(0);
     let ender_pearls = resources.get("ender_pearl").and_then(|v| v.as_u64()).unwrap_or(0);
 
-    let world_name = bot.world_name().to_string();
+    let world_name = bot.component::<azalea::world::InstanceName>().to_string();
 
     json!({
         "stage_progress": 0,
@@ -340,7 +340,7 @@ fn derived_features(_bot: &Client) -> Value {
         "can_smelt_anything": false,
         "time_since_progress": 0,
         "valid_actions_count": 0,
-        "skill_recency": [0.0; 10],
+        "skill_recency": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
     })
 }
 
