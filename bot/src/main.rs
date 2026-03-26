@@ -331,9 +331,44 @@ async fn handle_reset(
         info!("Creating bot {username} connecting to {addr}");
 
         match Client::join(account, addr.as_str()).await {
-            Ok((client, _rx)) => {
-                info!("Bot {username} connected successfully");
-                // Wait for spawn
+            Ok((client, mut rx)) => {
+                info!("Bot {username} connected, waiting for spawn...");
+
+                // Wait for the Spawn event before accessing position/state
+                let spawn_timeout = tokio::time::timeout(
+                    std::time::Duration::from_secs(30),
+                    async {
+                        while let Some(event) = rx.recv().await {
+                            match event {
+                                azalea::Event::Spawn => {
+                                    info!("Bot {username} spawned!");
+                                    return true;
+                                }
+                                azalea::Event::Disconnect(_) => {
+                                    error!("Bot {username} disconnected before spawn");
+                                    return false;
+                                }
+                                _ => {}
+                            }
+                        }
+                        false
+                    }
+                ).await;
+
+                if spawn_timeout != Ok(true) {
+                    error!("Bot {username} failed to spawn in time");
+                    return serde_json::to_string(&ErrorResult {
+                        msg_type: "reset_result".into(),
+                        error: "Bot failed to spawn".into(),
+                        env_id,
+                        raw_state: serde_json::json!({}),
+                        action_mask: vec![false; CORE_SKILL_COUNT],
+                        skill_result: SkillResult::failure("connect", "spawn timeout"),
+                    })
+                    .unwrap();
+                }
+
+                // Extra ticks to let chunks load
                 client.wait_ticks(20).await;
 
                 let mut lock = bots.write();
